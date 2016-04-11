@@ -21,9 +21,27 @@ Uses several techniques to try to recover only used parts of hard disks instead 
 4. `./ddrescue_used -h` to print a list of dependency problems (if any) and usage help
 5. The tool must be run as root (sudo) since it uses Linux commands that only root can run, such as mount
 
-##Recommendations:
+##Recommendations
+
+###Destination disk:
 The destination filesystem should support both sparse files and compression, like btrfs.
 Ensure you have sufficient destination disk space. You should only need the same space as is used on the source disk, but more is better!
+
+###Disable automounting:
+In Ubuntu (and probably many other distributions) filesystems will be automounted when they are attached and detected. This will interfere with tool behaviour and *must* be disabled:
+
+1. Install dconf-editor (`sudo apt-get install dconf-editor`)
+2. Navigate to `org.gnome.desktop.media-handling`
+3. Disable `automount` and `automount-open`
+
+This may also be configured in other places, e.g.:
+
+**Settings -> Removable Drives and Media -> Storage -> Removable Storage**:
+- Mount removable drives when hot-plugged
+- Mount removable media when inserted
+- Browse removable media when inserted
+
+These should all be unticked (disabled)
 
 ##Status:
 This tool is in Alpha testing.
@@ -50,6 +68,7 @@ Filesystem support can be expanded if supported by Linux.
 
 ##Reporting bugs:
 Please use the following command to create a log for reporting bugs. Note that this log may contain data from your disk that you may deem to be sensitive. Please sanitise as appropriate:
+
 `./ddrescue_used -kvvd <device> <disk.img> <destdir> 2> err.log`
 
 It is not recommended to pipe stdout to a file since the tool is at places interactive. Please paste stdout into a file separately if necessary. The -k option leaves log files in the destination which can be useful for debugging.
