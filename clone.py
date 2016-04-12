@@ -128,7 +128,7 @@ def clonexfs(image, partdev, partn):
      - Clone whole partition to loop
     """
     with helpers.AttachLoop(image, 'rw', partn=partn) as loop:
-        clonecmd = ['xfs_copy', partdev, loop]
+        clonecmd = ['xfs_copy', '-d', partdev, loop]
         result = helpers.checkgcscmd(clonecmd)
     return result
 

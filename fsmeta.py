@@ -33,7 +33,7 @@ _METACMD =    { 'vfat'   :(['fsck.fat'], ['-n'], ['-a']),
                 'ntfs'   :([], ['ntfsclone', '-O', '/dev/null', '-mtfs', '--rescue'], ['ntfsfix', '-n']),
                 # btrfs check --repair requires btrfs-tools v4 or later. Not used - errors on new simple FSs!
                 'btrfs'  :(['btrfs', 'check'], [], []),
-                'xfs'    :([], ['xfs_db', '-F', '-i',  '-c', 'metadump -o -w /dev/null'], ['xfs_repair'])}
+                'xfs'    :([], ['xfs_db', '-F', '-i',  '-c', 'metadump -o -w /dev/null'], ['xfs_repair', '-n'])}
                 #'xfs'    :(['xfs_repair'], ['-n'], [])}
 def get_metacmd(loop, partn, mode, clonefails):
     "Returns an fsck command as a list of args for subprocess."

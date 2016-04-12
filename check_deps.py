@@ -23,6 +23,7 @@ deps_mandatory = {
             'gddrescue':    ('1.17-1', 'ddrescue', 'ddrescuelog'),
             'mount':        ('2.20.1-5.1ubuntu20.7', 'losetup', 'mount', 'umount'),
             'util-linux':   ('2.20.1-5.1ubuntu20.7', 'blkid', 'blockdev'),
+            'parted':       ('2.3-19ubuntu1', 'partprobe'),
             'coreutils':    ('8.21-1ubuntu5.4', 'truncate'),
             'hdparm':       ('9.43-1ubuntu3', 'hdparm'),
             'e2fsprogs':    ('1.43~WIP.2016.03.15-2', 'filefrag', 'e2image', 'e2fsck'),

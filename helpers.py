@@ -76,7 +76,7 @@ def AttachLoop(source, mode, partn=None):
     # loop device reuse - fixed
     get_procoutput(['blockdev', '--flushbufs', loop])
     if partn is None:
-        cmd = ['losetup']
+        cmd = ['losetup', '--partscan']
     else:
         cmd = ['losetup', '--offset', str(partn['SStart']*512),
                '--sizelimit', str(partn['Size']*512)]
@@ -84,19 +84,18 @@ def AttachLoop(source, mode, partn=None):
         cmd.append('--read-only')
     cmd.extend([loop, source])
     get_procoutput(cmd)
-    if partn is None:
-        rereadpt(loop)
     try:
         yield loop
     finally:
         get_procoutput(['losetup', '--detach', loop])
-        rereadpt(loop)
 
 def rereadpt(loop):
     "Reread the partition table from a block device. Can get device busy error."
     count = 3
     while True:
-        proc = get_procoutput(['blockdev', '--rereadpt', loop])[0]
+        # Dropped blockdev --rereadpt for partprobe due to support for BLKPG
+        # BLKRRPART was giving 'Invalid argument' errors in later kernels
+        proc = get_procoutput(['partprobe', '-s', loop])[0]
         if proc.returncode == 0:
             break
         elif count > 0:
@@ -139,10 +138,15 @@ def getparts(looppath):
     for loopsub in genloopsub:
         loopsubpath = os.path.join('/dev/', loopsub)
         loopsubsysstartpath = os.path.join('/sys/class/block/', loopsub, 'start')
-        with open(loopsubsysstartpath, 'r') as f:
-            start = int(f.read())
+        try:
+            with open(loopsubsysstartpath, 'r') as f:
+                start = int(f.read())
+        except FileNotFoundError:
+            logging.error("No such file or directory: {}".format(loopsubsysstartpath))
+            start = -1
         size = get_device_size(loopsubpath)
-        tuplist.append( (loopsubpath, start, size) )
+        if start >= 0 and size >= 0:
+            tuplist.append( (loopsubpath, start, size) )
     tuplist.sort(key=lambda tup: tup[1])
     return tuplist
 
@@ -150,8 +154,12 @@ def get_device_size(devpath):
     "Returns the size in sectors of a device from the sysfs."
     devname = os.path.split(devpath)[1]
     devsyssizepath = os.path.join('/sys/class/block/', devname, 'size')
-    with open(devsyssizepath, 'r') as f:
-        size = int(f.read())
+    try:
+        with open(devsyssizepath, 'r') as f:
+            size = int(f.read())
+    except FileNotFoundError:
+        logging.error("No such file or directory: {}".format(devsyssizepath))
+        size = -1
     return size
 
 def get_freeloop():

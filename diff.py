@@ -11,7 +11,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM.
 """
 import helpers, fsmeta
-import logging
+import logging, time
 
 def difffs(options):
     "Run diff on corresponding device and image filesystems."
@@ -31,18 +31,24 @@ def difffs(options):
                      helpers.Mount(dev, devmnt), \
                      helpers.MountPoint(options) as loopmnt, \
                      helpers.Mount(loop, loopmnt):
-                    logging.info("Diffing {} with {}, {}:{}"
-                                    .format(dev, loop, start, size))
+                    logging.info("Diffing {} with {}, {}:{} as {}"
+                                    .format(dev, loop, start, size, fstype))
                     cmd = ['diff', '-rqN', devmnt, loopmnt]
                     helpers.checkgcscmd(cmd)
             except OSError as e:
                 logging.error("OSError [{}]: {}"
                     .format(e.errno, e.strerror))
+            # Spurious mount errors on image, try a delay
+            time.sleep(0.1)
 
 def getcommonparts(list1, list2):
     "Checks two input partition lists and combines into one list."
     common = []
-    if len(list1) > 0 and len(list2) > 0:
+    len1, len2 = len(list1), len(list2)
+    if len1 != len2:
+        logging.error("Found different length partition lists:\n{}\n{}"
+                            .format(list1, list2))
+    if len1 > 0 and len2 > 0:
         for dev1, start1, size1 in list1:
             for dev2, start2, size2 in list2:
                 if start1 == start2 and size1 == size2:
@@ -62,5 +68,7 @@ def getcommonparts(list1, list2):
                     break
     else:
         logging.error("No partitions found: {}, {}".format(list1, list2))
+    if len(common) < max(len1, len2):
+        logging.warning("Only diffing these partitions:\n{}".format(common))
     return common
 

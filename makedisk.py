@@ -14,6 +14,9 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM.
 import os, random, sys, logging
 from helpers import get_procoutput, randpath, get_freeloop, rereadpt, getparts
 
+if not os.geteuid() == 0:
+    sys.exit('Must be run as root (sudo)')
+
 fileblksz = 787
 files = [
     # path, name, size in 787B blocks
@@ -28,13 +31,13 @@ files = [
 ptsizeinterval = (200, 400)
 
 partitions = [
-    # fstype, pttype, mkfs switch
-    ('vfat', 'fat32', ''),
-    ('ext4', 'ext4', ''),
-    ('hfsplus', 'hfs', ''),
-    ('ntfs', 'NTFS', ''),
-    ('xfs', 'xfs', '-f'),
-    ('btrfs', 'btrfs', '--force')
+    # fstype, pttype, mkfs command - device string will be appended
+    ('vfat', 'fat32', 'mkfs.fat -n VFAT'),
+    ('ext4', 'ext4', 'mke2fs -L ext4 -t ext4'),
+    ('hfsplus', 'hfs', 'mkfs.hfsplus -v hfsplus'),
+    ('ntfs', 'NTFS', 'mkntfs -L NTFS -s 512 -p # -H 255 -S 63'),
+    ('xfs', 'xfs', 'mkfs.xfs -f -L xfs'),
+    ('btrfs', 'btrfs', 'mkfs.btrfs -f -d single -m single -L btrfs')
 ]
 
 #INIT
@@ -43,6 +46,7 @@ exe = lambda cmd: get_procoutput(cmd, shell=True)[0]
 options = lambda: None
 options.dest_directory = './'
 filepath = randpath(options, 'files.')
+cppath = os.path.join(filepath, '*')
 mntpath = randpath(options, 'mnt.')
 image = 'disk.img'
 loop = ' ' + get_freeloop() + ' '
@@ -74,19 +78,22 @@ for subpath, name, size in files:
     exe('mkdir ' + path)
     exe('dd if=/dev/urandom of=' + os.path.join(path, name) +
                     ' bs=' + str(fileblksz) + ' count=' + str(size))
-ptsizes = []
-excess = 4096
-for _ in range(len(partitions)):
-    ptsizes += [random.randint(*ptsizeinterval) * 2048]
-    excess += 2048
-disksize = sum(ptsizes) + excess
+ptlist = []
+disksize = 4096
+for pt in partitions:
+    ptsize = random.randint(*ptsizeinterval) * 2048
+    disksize += ptsize + 2048
+    ptlist += [pt + (ptsize,)]
+
 exe('truncate -s ' + str(disksize*512) + ' ' + image)
 exe('losetup' + loop + image)
 exe('parted -s' + loop + 'mklabel msdos')
+
 # Create PT
+random.shuffle(ptlist)
 start = 2048
-for i in range(len(partitions)):
-    end = start + ptsizes[i] - 3
+for i, (fstype, pttype, mkfs, ptsize) in enumerate(ptlist):
+    end = start + ptsize - 3
     if i < 3:
         parttype = ' primary '
     elif i == 3:
@@ -94,25 +101,26 @@ for i in range(len(partitions)):
         exe('parted -s' + loop + 'mkpart extended ' + str(start) + 's ' + str(disksize - 1) + 's')
         start += 2048
         end += 2048
-    exe('parted -s' + loop + 'mkpart' + parttype + str(start) + 's ' + str(end) + 's')
+    exe('parted -s' + loop + 'mkpart' + parttype + pttype + ' ' + str(start) + 's ' + str(end) + 's')
     start = end + 3
-#exe('blockdev --flushbufs' + loop)
-#rereadpt(loop.strip())
-random.shuffle(partitions)
-# Sort by reverse size order to get rid of the extended partition
-parts = getparts(loop.strip())
-parts.sort(key=lambda tup: tup[2], reverse=True)
 
-for i, (fstype, pttype, force) in enumerate(partitions):
+# Get partition devices
+rereadpt(loop.strip())
+parts = getparts(loop.strip())
+del parts[3]
+
+# Format filesystems and copy files
+for i, (fstype, pttype, mkfs, ptsize) in enumerate(ptlist):
     print('### START {} ###'.format(fstype))
     loopsub = ' ' + parts[i][0] + ' '
-    proc = exe('mkfs -t ' + fstype + ' ' + force + loopsub)
+    mkfscmd = mkfs.replace('#', str(parts[i][1]))
+    proc = exe(mkfscmd + loopsub)
     if proc.returncode != 0:
         print('### FAILED {} ###'.format(fstype))
         continue
     exe('mount' + loopsub + mntpath)
     MOUNTED = True
-    exe('cp -r ' + filepath + ' ' + mntpath)
+    exe('cp -r ' + cppath + ' ' + mntpath)
     exe('umount ' + mntpath)
     MOUNTED = False
     print('### FINISH {} ###'.format(fstype))
