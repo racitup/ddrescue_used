@@ -31,7 +31,7 @@ Ensure you have sufficient destination disk space. You should only need the same
 Attach the source disk as *close* as you can to the processor. By close I mean with as few bits of hardware in between as possible. I am currently testing a hard disk in a flakey USB3 caddy attached to a probably equally flakey USB3 hub. The caddy appears to get stuck in a read loop under heavy load. I would prefer to have the SATA disk attached directly to the motherboard by a SATA connection, but it does work well as a negative test case!
 
 ###Disable automounting:
-In Ubuntu (and probably many other distributions) filesystems will be automounted when they are attached and detected. This will interfere with tool behaviour and *must* be disabled:
+In Ubuntu (and probably many other distributions) filesystems will be automounted when they are attached and detected. This will interfere with tool behaviour and **must** be disabled:
 
 1. Install dconf-editor (`sudo apt-get install dconf-editor`)
 2. Navigate to `org.gnome.desktop.media-handling`
@@ -43,6 +43,8 @@ This may also be configured in other places, e.g.:
 - Mount removable drives when hot-plugged
 - Mount removable media when inserted
 - Browse removable media when inserted
+- Auto-run programs on new drives and media
+- Auto-open files on new drives and media
 
 These should all be unticked (disabled)
 
@@ -71,10 +73,17 @@ btrfs*     |  Yes  |        Free         | **, Clone only supports metadata, dat
 
 Filesystem support can be expanded if supported by Linux.
 
+##Testing:
+A utility called `makedisk.py` is provided that will easily create a disk image for testing. Once created attach it to a loop device using `losetup /dev/loop? ./IMAGEFILE` and supply the loop device as the `DEVICE` argument of ddrescue_used.
+
+Usage:
+
+`./makedisk.py IMAGEFILE [FS1] [FS2]...`
+
 ##Reporting bugs:
 Please use the following command to create a log for reporting bugs. Note that this log may contain data from your disk that you may deem to be sensitive. Please sanitise as appropriate:
 
-`./ddrescue_used -kvvs <device> <disk.img> <destdir> 2> err.log`
+`./ddrescue_used -kvvs DEVICE DISK.IMG DESTDIR 2> err.log`
 
 It is not recommended to pipe stdout to a file since the tool is at places interactive. Please paste stdout into a file separately if necessary. The -k option leaves log files in the destination which can also be useful for debugging.
 
