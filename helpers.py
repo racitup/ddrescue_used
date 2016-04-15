@@ -15,22 +15,34 @@ import signal
 import os, io, sys, time, re
 import logging
 import parse_args
-import random, string
+import random, string, glob
 from contextlib import contextmanager
 
 @contextmanager
 def ImageCopy(options):
     "Uses cp command to preserve sparse files. Python shutil does not do this."
     source = image(options)
-    dest = randpath(options, 'img.')
-    if os.path.exists(dest):
-        raise Exception('{} exists!'.format(dest))
-    cmd = ['cp', '--sparse=always', source, dest]
-    proc = get_procoutput(cmd)[0]
-    try:
-        yield dest
-    finally:
-        os.remove(dest)
+    imglist = glob.glob(os.path.join(options.dest_directory, 'img.????????'))
+    if len(imglist) > 1:
+        dest = imglist[0]
+        logging.warning("Resuming with {}. More than one found!".format(dest))
+    elif len(imglist) == 1:
+        dest = imglist[0]
+        logging.info("Resuming with {}.".format(dest))
+    else:
+        dest = randpath(options, 'img.')
+        logging.info("Copying image to {}.".format(dest))
+        cmd = ['cp', '--sparse=always', source, dest]
+        try:
+            proc = get_procoutput(cmd)[0]
+            if proc.returncode != 0:
+                raise Exception("Image copy failed!")
+        except:
+            os.remove(dest)
+            raise
+    yield dest
+    # Only removes on normal exit for resume, not Exception
+    os.remove(dest)
 
 @contextmanager
 def MountPoint(options):
@@ -51,7 +63,7 @@ def Mount(device, mnt, mode=None):
     else:
         cmd += ['ro,noexec']
     cmd.extend([device, mnt])
-    proc = get_procoutput(cmd, log=False)[0]
+    proc = get_procoutput(cmd)[0]
     if proc.returncode != 0:
         raise OSError(proc.returncode, STRERROR, device, None, mnt)
     try:
@@ -87,6 +99,8 @@ def AttachLoop(source, mode, partn=None):
     try:
         yield loop
     finally:
+        if mode == 'rw':
+            get_procoutput(['blockdev', '--flushbufs', loop])
         get_procoutput(['losetup', '--detach', loop])
 
 def rereadpt(loop):
@@ -97,6 +111,7 @@ def rereadpt(loop):
         # BLKRRPART was giving 'Invalid argument' errors in later kernels
         proc = get_procoutput(['partprobe', '-s', loop])[0]
         if proc.returncode == 0:
+            time.sleep(0.3)
             break
         elif count > 0:
             count -= 1
@@ -149,6 +164,63 @@ def getparts(looppath):
             tuplist.append( (loopsubpath, start, size) )
     tuplist.sort(key=lambda tup: tup[1])
     return tuplist
+
+def getblkidtype(loop):
+    "Returns strings like: ext2\\3\\4,ntfs,btrfs,vfat,hfsplus,xfs."
+    cmd = ['blkid', '-s', 'TYPE', '-o', 'value', loop]
+    return get_procoutput(cmd)[1]
+
+def getpartinfo(device):
+    "Returns a list of partition info. Removes partitions with no fstype."
+    # (devpath, start, size, fstype, metaresult, dataresult)
+    devtuplist = getparts(device)
+    outlist = []
+    if len(devtuplist) > 0:
+        for devtup in devtuplist:
+            fstype = getblkidtype(devtup[0])
+            if fstype:
+                outlist += [devtup + (fstype, None, None)]
+            else:
+                logging.warning("Removing partition {}: no fstype found!"
+                        .format(devtup[0]))
+    else:
+        logging.error('No disk partitions found in {}!'.format(device))
+    return outlist
+
+def getcommonparts(list1, device2):
+    "Checks two input partition lists and combines matches into one list."
+    list2 = getpartinfo(device2)
+    common = []
+    len1, len2 = len(list1), len(list2)
+    if len1 > 0 and len2 > 0:
+        for item1 in list1:
+            dev1, start1, size1, fstype1 = item1[:4]
+            for item2 in list2:
+                dev2, start2, size2, fstype2 = item2[:4]
+                if start1 == start2 and size1 == size2:
+                    if fstype1 == fstype2:
+                        common += [(dev1, dev2, start1, size1, fstype1) + item1[4:]]
+                        # find longest string of digits at the end, e.g. /dev/sdb3
+                        for pos in range(-3, 0):
+                            number = dev1[pos:]
+                            if number.isdigit():
+                                break
+                        else: # nobreak
+                            logging.error("No digit suffix found in device string: {}"
+                                            .format(dev1))
+                            break
+                        if number != dev2[pos:]:
+                            logging.warning("Partition numbers don't agree: {}:{}"
+                                            .format(dev1, dev2))
+                        break
+                    else:
+                        logging.error("Contradicting types for {}: {} & {}"
+                                        .format(dev1, fstype1, fstype2))
+    else:
+        logging.error("No partitions found:\n{}\n{}".format(list1, list2))
+    if len(common) < max(len1, len2):
+        logging.info("Fewer common partitions:\n{}".format(common))
+    return common
 
 def get_device_size(devpath):
     "Returns the size in sectors of a device from the sysfs."
@@ -236,28 +308,30 @@ def checkgcscmd(cmd):
 def generator_context_switch(cmd, cwd=None):
     "Uses yield to save app context, switch shell to subprocess and switch back when subprocess exits."
     old_stds = (sys.stdin, sys.stdout, sys.stderr)
-    with open(os.devnull, "r") as sys.stdin:
-        with io.StringIO() as sys.stdout:
-            with io.StringIO() as sys.stderr:
-            # DEBUG context switcher:
-            #with open("debug_context.log", "a", encoding="utf-8") as sys.stderr:
-                parse_args.reset_logging_config()
-                proc = subprocess.Popen(cmd, cwd=cwd,
-                    stdin=old_stds[0], stdout=old_stds[1], stderr=old_stds[2])
-                # Ensure we yield proc at least once
-                yield proc
-                while(proc.poll() == None):
+    try:
+        with open(os.devnull, "r") as sys.stdin:
+            with io.StringIO() as sys.stdout:
+                with io.StringIO() as sys.stderr:
+                # DEBUG context switcher:
+                #with open("debug_context.log", "a", encoding="utf-8") as sys.stderr:
+                    parse_args.reset_logging_config()
+                    proc = subprocess.Popen(cmd, cwd=cwd,
+                        stdin=old_stds[0], stdout=old_stds[1], stderr=old_stds[2])
+                    # Ensure we yield proc at least once
                     yield proc
-                cmdlog('gcs: cmd={}'.format(cmd_str(cmd)), proc.returncode)
-                # Play out stdout and stderr StringIOs
-                old_stds[2].write(sys.stderr.getvalue())
-            old_stds[1].write(sys.stdout.getvalue())
-    # Put environment back
-    sys.stdin = old_stds[0]
-    sys.stdout = old_stds[1]
-    sys.stderr = old_stds[2]
-    # Must be after sys.stderr is assigned
-    parse_args.reset_logging_config()
+                    while(proc.poll() == None):
+                        yield proc
+                    # Play out stdout and stderr StringIOs
+                    old_stds[2].write(sys.stderr.getvalue())
+                old_stds[1].write(sys.stdout.getvalue())
+    finally:
+        # Put environment back
+        sys.stdin = old_stds[0]
+        sys.stdout = old_stds[1]
+        sys.stderr = old_stds[2]
+        # Must be after sys.stderr is assigned
+        parse_args.reset_logging_config()
+        cmdlog('gcs: cmd={}'.format(cmd_str(cmd)), proc.returncode)
     return
 
 def get_process_cmd(proc):

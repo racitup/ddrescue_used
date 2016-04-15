@@ -31,7 +31,11 @@ def writable_dir(dirpath):
 
 def readable_blockfile(filepath):
     "Check to see if device is a block special and readable."
-    mode = os.stat(filepath).st_mode
+    try:
+        mode = os.stat(filepath).st_mode
+    except FileNotFoundError:
+        raise argparse.ArgumentTypeError('{} does not exist'
+                                            .format(filepath))
     if not stat.S_ISBLK(mode):
         raise argparse.ArgumentTypeError('{} is not a block special device'
                                             .format(filepath))

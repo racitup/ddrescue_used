@@ -13,28 +13,16 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM.
 """
 import sys, signal
 import os, shutil
-import logging
+import logging, traceback
 import btrace, testdisk, pt, ddrescue, helpers, fsmeta, getused
 import parse_args, check_deps, constants, clone, diff
 from statemachine import State, StateMachine
 
-# INIT
+#TODO: test with lots of images: MBR & GPT, FS combos, PEXL's, errors...
+
+# INIT 1 - cleanup requires OPTIONS
 NOT_INSTALLED = check_deps.check()
 OPTIONS = parse_args.parse(NOT_INSTALLED)
-check_deps.checkroot()
-# Initialise the ddrescue xfer log name
-ddrescue.set_ddrlog(OPTIONS)
-# device size in sectors
-DEVSIZE = helpers.get_device_size(OPTIONS.device)
-USED = parse_args.check_used(OPTIONS)
-manualY = False
-# If MetaRescue is interrupted, resume will assume all clones were a success
-clonefails = []
-# Start ddrescueview if required
-if hasattr(OPTIONS, 'noshow') and OPTIONS.noshow == False:
-    ddrescue.start_viewer(OPTIONS)
-
-#TODO: test with lots of images: MBR & GPT, FS combos, PEXL's, errors...
 
 # EXCEPTION & SIGNAL HANDLERS
 SYSEXCEPTHOOK = sys.excepthook
@@ -48,8 +36,9 @@ sys.excepthook = globalexceptions
 def signal_handler(sig, frame):
     "Add signal handler for termination."
     print('Caught signal {}!'.format(sig))
+    traceback.print_stack(frame)
     cleanup()
-    sys.exit(0)
+    raise Exception("Signal cleanup!")
 signal.signal(signal.SIGHUP,  signal_handler) #1
 signal.signal(signal.SIGINT,  signal_handler) #2 or CTRL+C
 signal.signal(signal.SIGQUIT, signal_handler) #3
@@ -63,9 +52,23 @@ def cleanup():
     pt.rmbackup(OPTIONS)
     btrace.stop()
 
+# INIT 2
+check_deps.checkroot()
+# Initialise the ddrescue xfer log name
+ddrescue.set_ddrlog(OPTIONS)
+# device size in sectors
+DEVSIZE = helpers.get_device_size(OPTIONS.device)
+USED = parse_args.check_used(OPTIONS)
+manualY = False
+# If MetaRescue is interrupted, resume will assume all clones were a success
+partinfo = helpers.getpartinfo(OPTIONS.device)
+# Start ddrescueview if required
+if hasattr(OPTIONS, 'noshow') and OPTIONS.noshow == False:
+    ddrescue.start_viewer(OPTIONS)
+
 # STATES
-Clone = State('Transfer Clonable FSs',
-    "clonefails = clone.clonefs(OPTIONS, DEVSIZE)")
+MetaClone = State('Transfer Clonable Metadata',
+    "partinfo = clone.clonemeta(OPTIONS, DEVSIZE, partinfo)")
 StartBtrace = State('Btrace',
     "btrace.start_bgproc(OPTIONS.device, DEVSIZE); BTRACE_POLL_COUNT = 0")
 AddStartEnd = State('Mark Start & End 1Mi Used',
@@ -82,7 +85,7 @@ PTReadTDLog = State('Read TestDisk Log',
 PTManualRpt = State('Repeat Manual TestDisk',
     "repeatY = testdisk.question_manual(ptable)")
 FindMeta = State('Find FS Metadata RO',
-    "findmetarunning = fsmeta.scanmeta_running(OPTIONS, OPTIONS.device, ptable, 'ro', clonefails)")
+    "findmetarunning = fsmeta.scanmeta_running(OPTIONS, OPTIONS.device, ptable, 'ro', partinfo)")
 BtraceWait = State('Wait 0.3s',
     "BTRACE_POLL_COUNT = 0")
 CloseBtrace = State('Stop Btrace',
@@ -97,15 +100,15 @@ PTRepair = State('Testdisk Repair Image PT',
     "testdiskrunning = testdisk.manual(OPTIONS, 'image')")
 FixImgRW = State('Repair Image Using FSCK',
     "fixmetarunning = fsmeta.fixmeta_image_running(OPTIONS, ptable)")
-MapExtents = State('Find Used Space',
-    "mapper = getused.MapExtents(OPTIONS, DEVSIZE); mapper.wrapfindallused(USED, clonefails)")
+MapExtents = State('Clone and/or Find Used Space',
+    "mapper = getused.MapExtents(OPTIONS, DEVSIZE); partinfo = mapper.map(partinfo, USED)")
 DataRescue = State('DDrescue Used Space',
     "ddrrunning = ddrescue.interactive(OPTIONS)")
 DiffFS = State('Diff Corresponding Device and Image FSs',
-    "diff.difffs(OPTIONS)")
+    "diff.difffs(OPTIONS, partinfo)")
 
 # TRANSITIONS
-Clone.add_transition(StartBtrace,
+MetaClone.add_transition(StartBtrace,
     condition='True')
 StartBtrace.add_transition(AddStartEnd,
     condition="BTRACE_POLL_COUNT >= 3")
@@ -197,11 +200,13 @@ resumed = False
 if 'data' == statetag:
     startstate = DataRescue
     resumed = True
+    logging.info("Resuming at Data Rescue...")
 elif 'meta' == statetag:
     startstate = MetaRescue
     resumed = True
+    logging.info("Resuming at Metadata Rescue...")
 else:
-    startstate = Clone
+    startstate = MetaClone
 
 # STATEMACHINE
 sm = StateMachine(0.1, startstate, globals(), locals())

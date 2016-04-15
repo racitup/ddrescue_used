@@ -62,11 +62,12 @@ class PartitionTable(object):
             if geomatch:
                 geoCHS = list( map(int, geomatch.groups()) )
                 sectspercyl = geoCHS[1] * geoCHS[2]
-                if (geoCHS[0] - 1) * sectspercyl <= self.devsize <= geoCHS[0] * sectspercyl:
+                if abs(self.devsize - (geoCHS[0] * sectspercyl)) < sectspercyl:
                     foundgeo = True
                 else:
                     logging.error('CHS geometry: {} does not match device size: {}!'
                         .format(geoCHS, self.devsize))
+                continue
             elif lbamatch:
                 foundlba = True
                 p = list(lbamatch.groups())

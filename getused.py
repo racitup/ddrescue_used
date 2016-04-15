@@ -31,58 +31,25 @@ class MapExtents(BtraceParser):
     ddrlog_suffix = '.used.log'
     logmagic = 'DataRescue'
 
-    def getpartn(self, source, mode, clonefails):
+    def _getpartn(self, source, mode, partinfo):
         """Generator for returning mounted partitions in the source.
 
-        Returned tuple is: (mountpoint, fstype string, loop, start, size sectors)
+        Returned tuple is: (mountpoint, fstype string, start, size sectors)
         """
         with helpers.AttachLoop(source, mode) as loop:
-            # (looppath, start, size)
-            devtuplist = helpers.getparts(loop)
-            if len(devtuplist) > 0:
-                with helpers.MountPoint(self.options) as mnt:
-                    for devtup in devtuplist:
-                        fstype = fsmeta.get_blkidtype(devtup[0])
-                        if self.ptfilter(fstype, devtup[1], devtup[2], clonefails):
-                            with helpers.Mount(devtup[0], mnt, mode):
-                                yield (mnt, fstype) + devtup
-                        else:
-                            logging.info('Skipping {}, start={}, size={}'
-                                            .format(*devtup))
-            else:
-                logging.error('No disk partitions found in {}!'
-                                .format(source))
+            common = helpers.getcommonparts(partinfo, loop)
+            if len(common) > 0:
+                for dev, loopdev, start, size, fstype, rclonemeta, rclonedata in common:
+                    with helpers.MountPoint(self.options) as mnt, \
+                         helpers.Mount(loopdev, mnt, mode):
+                        yield mnt, fstype, start, size
 
-    def ptfilter(self, fstype, start, size, clonefails):
-        "Returns True if we should map the data, False if not."
-        # clonefail: (devpath, start, size, fstype)
-        if fstype == '':
-            return False
-        elif fstype in clone.CLONEABLE:
-            for devpath, cstart, csize, cfstype in clonefails:
-                if cstart == start:
-                    if fstype == cfstype:
-                        # Clone failed
-                        if fstype == 'btrfs':
-                            return False
-                        else:
-                            return True
-                    else:
-                        raise Exception('Contradicting types for {}'.format(devpath))
-            # Clone was successful
-            if fstype == 'btrfs':
-                return True
-            else:
-                return False
-        else:
-            return True
-
-    pat_filefrag = re.compile(r"\s*\d+:\s+\d+\.\.\s+\d+:\s+(\d+)\.\.\s+(\d+):\s+(\d+)")
+    _pat_filefrag = re.compile(r"\s*\d+:\s+\d+\.\.\s+\d+:\s+(\d+)\.\.\s+(\d+):\s+(\d+)")
     # hdparm --fibmap v9.43 has a bug fixed in v9.45
     # filefrag has a bug in v1.42.9 fixed in v1.42.12
     # Another bug requires 1.43-WIP 2015 or later
     # Example:
-    #filefrag -b512 -e edisk.img 
+    #filefrag -b512 -e edisk.img
     #Filesystem type is: ef53
     #File size of edisk.img is 3221225472 (6291456 blocks of 512 bytes)
     # ext:     logical_offset:        physical_offset: length:   expected: flags:
@@ -94,14 +61,14 @@ class MapExtents(BtraceParser):
     # 186:  6152192.. 6275071:   32641024..  32763903: 122880:   33308416:
     # 187:  6275072.. 6291455:   32784384..  32800767:  16384:   32763904: eof
     #edisk.img: 185 extents found
-    def parse_extents(self, path, offset, diskorder=True):
+    def _parse_extents(self, path, offset, diskorder=True):
         "Parse file extents & return sorted extent list & the number of sectors."
         text = helpers.get_procoutput(['filefrag', '-b512', '-e', path])[1]
         genline = (m.group(0) for m in re.finditer(r"^.+$", text, re.MULTILINE))
         total = 0
         extent_list = []
         for line in genline:
-            ematch = self.pat_filefrag.match(line)
+            ematch = self._pat_filefrag.match(line)
             if ematch:
                 extent = ematch.groups()
                 # filefrag returns physical offsets relative to partition start
@@ -149,19 +116,19 @@ class MapExtents(BtraceParser):
             total = mergetotal
         return total, extent_list
 
-    def getfreesectors(self, mnt):
+    def _getfreesectors(self, mnt):
         "Returns integer numbers: (blocksize, freespace) in 512 byte sectors."
         stat = os.statvfs(mnt)
         blksects = stat.f_frsize // 512
         return (blksects, stat.f_bavail * blksects)
 
-    def foundfree(self, freespace, pstart, psize):
+    def _foundfree(self, freespace, pstart, psize):
         """Returns nsectors if >=1024 sectors of space was found, 0 otherwise.
 
         Also adds extents as used items to the list.
         Input start and size are the partition absolute start position and size.
         """
-        nsectors, elist = self.parse_extents(freespace, pstart)
+        nsectors, elist = self._parse_extents(freespace, pstart)
         if nsectors > 1024:
             usedstart = pstart
             usedtotal = 0
@@ -177,7 +144,7 @@ class MapExtents(BtraceParser):
         else:
             return 0
 
-    def findfreesectors(self, mnt, start, size):
+    def _findfreesectors(self, mnt, start, size):
         """Gets the list of free sectors by allocating them to a file.
 
         Needs rw permission.
@@ -186,7 +153,7 @@ class MapExtents(BtraceParser):
         2. dd if=/dev/zero of=<file> bs=512*1024 count=1 seek=<nsectors//1024-1>
         3. dd if=/dev/zero of=<file> bs=<512*x> count=<nsectors//x>
         """
-        free = self.getfreesectors(mnt)[1]
+        free = self._getfreesectors(mnt)[1]
         if free <= 1024:
             logging.warning('OS reports less than 0.5MB free space on {}'
                                 .format(mnt))
@@ -198,7 +165,7 @@ class MapExtents(BtraceParser):
         cmd = ['hdparm', '--fallocate', str(free // 2), empty]
         proc = helpers.get_procoutput(cmd)[0]
         if proc.returncode == 0:
-            nsectors = self.foundfree(empty, start, size)
+            nsectors = self._foundfree(empty, start, size)
             if nsectors:
                 helpers.removefile(empty)
                 return nsectors
@@ -209,13 +176,13 @@ class MapExtents(BtraceParser):
                 f.seek((free - 1024) * 512)
                 zeros = z.read(1024 * 512)
                 f.write(zeros)
-        nsectors = self.foundfree(empty, start, size)
+        nsectors = self._foundfree(empty, start, size)
         helpers.removefile(empty)
         if nsectors:
             return nsectors
         # 3. DD FILL
         # Check destination has enough space
-        destfree = self.getfreesectors(self.options.dest_directory)[1]
+        destfree = self._getfreesectors(self.options.dest_directory)[1]
         if free > destfree:
             logging.error('Not enough destination space to fill empty blocks')
             return 0
@@ -224,29 +191,48 @@ class MapExtents(BtraceParser):
         with open(empty, 'wb') as f:
             for _ in range(free//1024):
                 f.write(zeros)
-        nsectors = self.foundfree(empty, start, size)
+        nsectors = self._foundfree(empty, start, size)
         helpers.removefile(empty)
         return nsectors
 
-    def wrapfindallused(self, usedmethod=None, clonefails=[]):
-        "Tidiness wrapper for setup logic."
+    def _dataclone(self, partinfo, usedmethod, source, mode):
+        "Tries to clone the data otherwise maps the data blocks."
+        # (devpath, start, size, fstype, clonemeta & clonedata results)
+        partinfo = clone.clonedata(self.options, self.devsize, partinfo)
+        tomap = []
+        for part in partinfo:
+            if not part[5]: # clonedata result
+                tomap += [part]
+            else:
+                logging.info('Skipping data map of {}: start={}, size={}, type={}'
+                                    .format(*part[:4]))
+        if tomap:
+            self._findallused(usedmethod, source, mode, tomap)
+        else:
+            # Create empty usedlog in case of resume
+            self.write_log()
+            logging.info("No mapping required!")
+        return partinfo
+
+    def map(self, partinfo, usedmethod=None):
+        "Setup the mapping."
         if usedmethod is True:
             mode = 'ro'
             if self.usedevice:
                 source = self.options.device
-                self.findallused(usedmethod, source, mode, clonefails)
             else:
                 source = helpers.image(self.options)
-                self.findallused(usedmethod, source, mode, clonefails)
+            return self._dataclone(partinfo, usedmethod, source, mode)
         else:
             mode = 'rw'
             if self.usedevice:
                 raise Exception('Writing to device using free space method is not permitted.')
             else:
+                # Take image copy before we clone the data
                 with helpers.ImageCopy(self.options) as source:
-                    self.findallused(usedmethod, source, mode, clonefails)
+                    return self._dataclone(partinfo, usedmethod, source, mode)
 
-    def findallused(self, usedmethod, source, mode, clonefails):
+    def _findallused(self, usedmethod, source, mode, partinfo):
         """Gets the used disk extents.
 
         Uses one of two methods:
@@ -256,7 +242,7 @@ class MapExtents(BtraceParser):
         otherwise Free. This is for performance reasons on finding free space.
         Can be overridden by passing usedmethod=True/False as parameter.
         """
-        for mnt, fstype, loop, start, size in self.getpartn(source, mode, clonefails):
+        for mnt, fstype, start, size in self._getpartn(source, mode, partinfo):
             logging.info('Mapping {} pt {}:{} of type {} on {}'
             .format(source, str(start), str(size), fstype, mnt))
 
@@ -264,7 +250,7 @@ class MapExtents(BtraceParser):
                 (usedmethod is None and fstype in ['ext2', 'ext3', 'ntfs'])):
                 total_sectors = 0
                 for filepath in helpers.getfile(mnt):
-                    sects, elist = self.parse_extents(filepath, start)
+                    sects, elist = self._parse_extents(filepath, start)
                     for e in elist: self.add_extent(*e)
                     logging.log(5, 'Used: {} sectors in {} extents for {}'
                                 .format(sects, len(elist), filepath))
@@ -272,7 +258,7 @@ class MapExtents(BtraceParser):
                 logging.info('Found {} MB used.'.format(total_sectors//2048))
             else:
                 # Requires rw permission
-                sects = self.findfreesectors(mnt, start, size)
+                sects = self._findfreesectors(mnt, start, size)
                 logging.info('Found {} MB free.'.format(sects//2048))
         self.write_log()
 

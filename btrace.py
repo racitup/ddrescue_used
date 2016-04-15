@@ -136,13 +136,13 @@ class BtraceParser(object):
             self.infile = source
         else:
             raise Exception('Did not recognise btrace source: {}'.format(type(source)))
-        self.stats = {'RWBS':{'R':0,'W':0,'D':0,'N':0,'F':0,'FUA':0,'A':0,'B':0,'S':0,'M':0},
-                 'read_lines':0,
-                 'commands':{},
-                 'error_list':{},
-                    'R_sectors':0,'W_sectors':0,
-                    'C':0,'B':0,'D':0,'I':0,'Q':0,'F':0,'G':0,'M':0,
-                    'S':0,'P':0,'U':0,'T':0,'X':0,'A':0,'payloads':0}
+        # Only include items you want to see zero/empty, others are dynamically added
+        self.stats = {  'RWBS':{},
+                        'actions':{},
+                        'commands':{},
+                        'read_lines':0,
+                        'R_sectors':0,
+                        'W_sectors':0 }
     # The extents list is formed of tuples: (start_sector, n_sectors)
     # and sorted by start_sector, sector size is 512 bytes
         self.extents = []
@@ -222,6 +222,23 @@ class BtraceParser(object):
         self.start_sectors = [data[0] for data in self.extents]
         return
 
+    def statinc(self, key, section=None, value=1):
+        "Increments items in the stat structure, making sure they exist first."
+        if section:
+            # check the section exists first
+            self.statinc(section, None, None)
+            try:
+                self.stats[section][key] += value
+            except KeyError:
+                self.stats[section][key] = value
+        else:
+            try:
+                if value: self.stats[key] += value
+                else: readsection = self.stats[key]
+            except KeyError:
+                if value: self.stats[key] = value
+                else: self.stats[key] = {}
+
     pat_plus = re.compile(r"(\d+) \+ (\d+)")
     pat_sqbraces = re.compile(r"\[(.+)\]")
     def parse_other(self, is_C, other):
@@ -231,7 +248,7 @@ class BtraceParser(object):
         sector = 0
         n_sectors = 0
         if plus_match is None:
-            self.stats['payloads'] += 1
+            self.statinc('payloads')
         else:
             sector = int(plus_match.group(1))
             n_sectors = int(plus_match.group(2))
@@ -241,13 +258,9 @@ class BtraceParser(object):
             if is_C:
                 # Remove successes: error = "[0]"
                 if sqbrace_content != '0':
-                    if sqbrace_content not in self.stats['error_list']:
-                        self.stats['error_list'][sqbrace_content] = 0
-                    self.stats['error_list'][sqbrace_content] += 1
+                    self.statinc(sqbrace_content, 'error_list')
             else:
-                if sqbrace_content not in self.stats['commands']:
-                    self.stats['commands'][sqbrace_content] = 0
-                self.stats['commands'][sqbrace_content] += 1
+                self.statinc(sqbrace_content, 'commands')
 
         return (sector, n_sectors)
 
@@ -270,14 +283,12 @@ class BtraceParser(object):
         # One of: D[iscard], W[rite], R[ead], N[one of the above]
         # Any of: F[orce Unit Access(FUA)], A[head], S[ync], M[etadata]
         for i, char in enumerate(RWBS):
-            if 0 == i and 'F' == char:
-                self.stats['RWBS'][char] += 1
-            elif 'F' == char:
-                self.stats['RWBS']['FUA'] += 1
+            if 0 != i and 'F' == char:
+                self.statinc('FUA', 'RWBS')
             else:
-                self.stats['RWBS'][char] += 1
+                self.statinc(char, 'RWBS')
         for char in action:
-            self.stats[char] += 1
+            self.statinc(char, 'actions')
 
         # Parse other
         if 'C' in action:
@@ -291,9 +302,9 @@ class BtraceParser(object):
         # Add to extents list & update stats with n_sectors
         self.add_extent(sector, n_sectors)
         if 'R' in RWBS:
-            self.stats['R_sectors'] += n_sectors
+            self.statinc('R_sectors', value=n_sectors)
         elif 'W' in RWBS:
-            self.stats['W_sectors'] += n_sectors
+            self.statinc('W_sectors', value=n_sectors)
         return
 
     def read_btrace(self):
@@ -317,7 +328,7 @@ class BtraceParser(object):
                 length = len(line)
                 if length > 0:
                     logging.log(5, '{}:{}'.format(self.stats['read_lines'],line))
-                    self.stats['read_lines'] += 1
+                    self.statinc('read_lines')
                     local_lines += 1
                     self.parse_btrace(*line.split(None,maxsplit=7))
                 else:
@@ -331,7 +342,7 @@ class BtraceParser(object):
         local_lines = 0
         for line in self.infile:
             self.parse_btrace(*line.split(None,maxsplit=7))
-            self.stats['read_lines'] += 1
+            self.statinc('read_lines')
             local_lines += 1
         return local_lines
 

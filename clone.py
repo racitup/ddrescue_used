@@ -1,5 +1,5 @@
 """
-Module for cloning btrfs, ext, ntfs and xfs filesystems.
+Module for cloning filesystems.
 
 ##License:
 Original work Copyright 2016 Richard Case
@@ -10,50 +10,55 @@ subject to this statement and the copyright notice above being included.
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM.
 """
-import helpers, fsmeta
+import helpers, fsmeta, fs
 import logging, os
 
 # For debugging: import pdb; pdb.set_trace() # DEBUG
 
-CLONEABLE = ('btrfs', 'ext2', 'ext3', 'ext4', 'ntfs', 'xfs')
-
-def clonefs(options, devsize):
+def _clone(clonemeta, options, devsize, partinfo):
     "Transfers filesystems that support it using a clone application."
-    helpers.rereadpt(options.device)
-    # (devpath, start, size)
-    partlist = helpers.getparts(options.device)
-    faillist = []
+    # (devpath, start, size, fstype, clonemeta & clonedata results)
+    outlist = []
     image = helpers.image(options)
     create_image(image, devsize)
-    if len(partlist) > 0:
-        for part in partlist:
-            fstype = fsmeta.get_blkidtype(part[0])
-            #showsizes(image) # DEBUG
-            if fstype in CLONEABLE:
-                info = part + (fstype,)
-                logging.info('Cloning {}, start={}, size={}, type={}'
-                                .format(*info))
-                partn = {}
-                partn['SStart'] = part[1]
-                partn['Size'] = part[2]
-                args = (image, part[0], partn)
-                if fstype == 'btrfs':
-                    args += (options,)
-                    result = clonebtrfs(*args)
-                elif fstype in ('ext2', 'ext3', 'ext4'):
-                    result = cloneext(*args)
-                elif fstype == 'ntfs':
-                    result = clonentfs(*args)
-                elif fstype == 'xfs':
-                    result = clonexfs(*args)
+    for devpath, start, size, fstype, metaresult, dataresult in partinfo:
+        #showsizes(image) # DEBUG
+        partn = {}
+        partn['SStart'] = start
+        partn['Size'] = size
+        clonepath = helpers.randpath(options, 'clone.')
+        with helpers.AttachLoop(image, 'rw', partn=partn) as loop:
+            try:
+                cmd2 = None
+                if clonemeta:
+                    cmd2 = fs.clonemeta2(fstype, clonepath, loop)
+                    if cmd2:
+                        cmd1 = fs.clonemeta1(fstype, devpath, clonepath)
+                    else:
+                        cmd1 = fs.clonemeta1(fstype, devpath, loop)
                 else:
-                    raise Exception('Should not get here.')
-                if not result:
-                    # (devpath, start, size, fstype)
-                    faillist += [part + (fstype, )]
-    else:
-        logging.error('No disk partitions found in {}!'.format(options.device))
-    return faillist
+                    cmd1 = fs.clonedata(fstype, devpath, loop)
+            except KeyError:
+                outlist += [(devpath, start, size, fstype, None, None)]
+                continue
+
+            if cmd1:
+                logging.info('Cloning {}: start={}, size={}, type={}'
+                        .format(devpath, start, size, fstype))
+                result = helpers.checkgcscmd(cmd1)
+                if cmd2 and result:
+                    result = helpers.checkgcscmd(cmd2)
+                helpers.removefile(clonepath)
+            else:
+                result = None
+        if clonemeta:
+            outlist += [(devpath, start, size, fstype, result, None)]
+        else:
+            outlist += [(devpath, start, size, fstype, metaresult, result)]
+    return outlist
+
+clonemeta = lambda options, devsize, partinfo: _clone(True, options, devsize, partinfo)
+clonedata = lambda options, devsize, partinfo: _clone(False, options, devsize, partinfo)
 
 def showsizes(path):
     "Debug helper for finding allocated/apparent/ls and used sizes."
@@ -75,60 +80,4 @@ def create_image(image, devsize):
     proc = helpers.get_procoutput(['truncate', '-s', str(devsizeB), image])[0]
     if proc.returncode != 0:
         raise Exception('Could not allocate image file.')
-
-def clonebtrfs(image, partdev, partn, options):
-    """BTRFS clone.
-
-     - Clone metadata to file
-     - Attach loop device to an image offset
-     - Restore file to loop
-     - Change UUID on loop
-     - Recover data later in getused
-    """
-    clonepath = helpers.randpath(options, 'btrfs.')
-    clonecmd = ['btrfs-image', '-t4', '-w', partdev, clonepath]
-    result = helpers.checkgcscmd(clonecmd)
-    if result:
-        with helpers.AttachLoop(image, 'rw', partn=partn) as loop:
-            restorecmd = ['btrfs-image', '-r', '-t4', clonepath, loop]
-            result = helpers.checkgcscmd(restorecmd)
-            helpers.get_procoutput(['blockdev', '--flushbufs', loop])
-            # btrfstune -u requires btrfs-tools v4.1+
-            # Not used here because new UUID causes FSCK to fail and fs is unmountable!!
-            #helpers.get_procoutput(['btrfstune', '-fu', loop])
-    helpers.removefile(clonepath)
-    return result
-
-def cloneext(image, partdev, partn):
-    """ext2/3/4 clone.
-
-     - Attach loop device to an image offset
-     - Clone whole partition to loop
-    """
-    with helpers.AttachLoop(image, 'rw', partn=partn) as loop:
-        clonecmd = ['e2image', '-arp', partdev, loop]
-        result = helpers.checkgcscmd(clonecmd)
-    return result
-
-def clonentfs(image, partdev, partn):
-    """NTFS clone.
-
-     - Attach loop device to an image offset
-     - Clone whole partition to loop
-    """
-    with helpers.AttachLoop(image, 'rw', partn=partn) as loop:
-        clonecmd = ['ntfsclone', '--rescue', '-fO', loop, partdev]
-        result = helpers.checkgcscmd(clonecmd)
-    return result
-
-def clonexfs(image, partdev, partn):
-    """XFS clone.
-
-     - Attach loop device to an image offset
-     - Clone whole partition to loop
-    """
-    with helpers.AttachLoop(image, 'rw', partn=partn) as loop:
-        clonecmd = ['xfs_copy', '-d', partdev, loop]
-        result = helpers.checkgcscmd(clonecmd)
-    return result
 

@@ -13,6 +13,7 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM.
 """
 import os, random, sys, logging
 from helpers import get_procoutput, randpath, get_freeloop, rereadpt, getparts
+import fs
 
 if not os.geteuid() == 0:
     sys.exit('Must be run as root (sudo)')
@@ -27,18 +28,24 @@ files = [
     ('directory/DEEPER', 'file.5', 4261)
 ]
 
+def usage():
+    "Print simple usage."
+    print("\nmakedisk.py IMAGEFILE [FS1] [FS2]...\n")
+    print("  Supported filesystems:\n  {}\n"
+                    .format(' '.join(fs.support())))
+    sys.exit(2)
+
+def parseargs():
+    "Parse input args."
+    args = sys.argv[1:]
+    if len(args) > 0: image = args[0]
+    else: usage()
+    if len(args) > 1: fss = args[1:]
+    else: fss = fs.support()
+    return image, fss
+
 # Between 200 and 400MB, in 2048s
 ptsizeinterval = (200, 400)
-
-partitions = [
-    # fstype, pttype, mkfs command - device string will be appended
-    ('vfat', 'fat32', 'mkfs.fat -n VFAT'),
-    ('ext4', 'ext4', 'mke2fs -L ext4 -t ext4'),
-    ('hfsplus', 'hfs', 'mkfs.hfsplus -v hfsplus'),
-    ('ntfs', 'NTFS', 'mkntfs -L NTFS -s 512 -p # -H 255 -S 63'),
-    ('xfs', 'xfs', 'mkfs.xfs -f -L xfs'),
-    ('btrfs', 'btrfs', 'mkfs.btrfs -f -d single -m single -L btrfs')
-]
 
 #INIT
 logging.basicConfig(level=logging.DEBUG)
@@ -48,7 +55,7 @@ options.dest_directory = './'
 filepath = randpath(options, 'files.')
 cppath = os.path.join(filepath, '*')
 mntpath = randpath(options, 'mnt.')
-image = 'disk.img'
+image, filesystems = parseargs()
 loop = ' ' + get_freeloop() + ' '
 
 # Cleanup
@@ -71,7 +78,7 @@ def globalexceptions(typ, value, traceback):
 sys.excepthook = globalexceptions
 
 # START
-# On average disk image should be around 2GB in size
+# On average disk image should be around 2.4GB in size
 exe('mkdir ' + mntpath)
 for subpath, name, size in files:
     path = os.path.join(filepath, subpath)
@@ -80,10 +87,10 @@ for subpath, name, size in files:
                     ' bs=' + str(fileblksz) + ' count=' + str(size))
 ptlist = []
 disksize = 4096
-for pt in partitions:
+for fstype in filesystems:
     ptsize = random.randint(*ptsizeinterval) * 2048
     disksize += ptsize + 2048
-    ptlist += [pt + (ptsize,)]
+    ptlist += [(fstype, ptsize)]
 
 exe('truncate -s ' + str(disksize*512) + ' ' + image)
 exe('losetup' + loop + image)
@@ -92,7 +99,8 @@ exe('parted -s' + loop + 'mklabel msdos')
 # Create PT
 random.shuffle(ptlist)
 start = 2048
-for i, (fstype, pttype, mkfs, ptsize) in enumerate(ptlist):
+for i, (fstype, ptsize) in enumerate(ptlist):
+    pttype = fs.pttype(fstype)
     end = start + ptsize - 3
     if i < 3:
         parttype = ' primary '
@@ -107,14 +115,14 @@ for i, (fstype, pttype, mkfs, ptsize) in enumerate(ptlist):
 # Get partition devices
 rereadpt(loop.strip())
 parts = getparts(loop.strip())
-del parts[3]
+if len(parts) >= 4:
+    del parts[3]
 
 # Format filesystems and copy files
-for i, (fstype, pttype, mkfs, ptsize) in enumerate(ptlist):
+for i, (fstype, ptsize) in enumerate(ptlist):
     print('### START {} ###'.format(fstype))
     loopsub = ' ' + parts[i][0] + ' '
-    mkfscmd = mkfs.replace('#', str(parts[i][1]))
-    proc = exe(mkfscmd + loopsub)
+    proc = exe(fs.mkfs(fstype, loopsub, parts[i][1]))
     if proc.returncode != 0:
         print('### FAILED {} ###'.format(fstype))
         continue

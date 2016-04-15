@@ -27,6 +27,9 @@ Uses several techniques to try to recover only used parts of hard disks instead 
 The destination filesystem should support both sparse files and compression, like btrfs.
 Ensure you have sufficient destination disk space. You should only need the same space as is used on the source disk, but more is better!
 
+###Source disk:
+Attach the source disk as *close* as you can to the processor. By close I mean with as few bits of hardware in between as possible. I am currently testing a hard disk in a flakey USB3 caddy attached to a probably equally flakey USB3 hub. The caddy appears to get stuck in a read loop under heavy load. I would prefer to have the SATA disk attached directly to the motherboard by a SATA connection, but it does work well as a negative test case!
+
 ###Disable automounting:
 In Ubuntu (and probably many other distributions) filesystems will be automounted when they are attached and detected. This will interfere with tool behaviour and *must* be disabled:
 
@@ -47,7 +50,7 @@ These should all be unticked (disabled)
 This tool is in Alpha testing.
 
 The source disk is only ever used read-only, so the source data is safe.
-Please do not rely on the image created to be a reliable copy. Make use of the -d switch to diff the source with the image after the copy is created if you want to validate the image content.
+Please do not rely on the image created to be a reliable copy. Make use of the -d switch to diff the source with the image after the copy is created if you want to validate the image content. Beware this is *very* intensive and may take a long time!
 Use on failing hard disks at your own risk. If your data is valuable please use another recovery tool until this tool is properly validated. Testing with errored disks is ongoing.
 
 ##Filesystem support:
@@ -59,19 +62,21 @@ vfat       |  No   |        Free         |
 ext2/3/4   |  Yes  | 2/3: Used, 4: Free  |
 hfsplus    |  No   |        Free         |
 ntfs       |  Yes  |        Used         |
-xfs        |  Yes  |        Free         |
-btrfs*     |  Yes  |        Free         | Clone only supports metadata, data is transferred separately
+xfs        |  Yes  |        Free         | **
+btrfs*     |  Yes  |        Free         | **, Clone only supports metadata, data is transferred separately
 
-*btrfs support is restricted to single device filesystems. Multiple device filesystems are not supported and will cause the tool to fail. This is because the kernel uses the UUID to scan for sibling filesystems and gets confused when presented with the image which has an identical UUID. btrfstune -u has been tried to rectify this but at current moment causes filesystem corruption. There is no plan to fix btrfs support.
+*btrfs support is restricted to single device filesystems. Multiple device filesystems are not supported and will cause the tool to fail. This is because the kernel uses the UUID to scan for sibling filesystems and gets confused when presented with the image which has an identical UUID. btrfstune -u has been tried to rectify this but at current moment causes filesystem corruption. There is no plan to enhance btrfs support.
+
+**both btrfs and xfs give various mount and fsck errors, presumably due to UUID problems. I welcome feedback on solutions.
 
 Filesystem support can be expanded if supported by Linux.
 
 ##Reporting bugs:
 Please use the following command to create a log for reporting bugs. Note that this log may contain data from your disk that you may deem to be sensitive. Please sanitise as appropriate:
 
-`./ddrescue_used -kvvd <device> <disk.img> <destdir> 2> err.log`
+`./ddrescue_used -kvvs <device> <disk.img> <destdir> 2> err.log`
 
-It is not recommended to pipe stdout to a file since the tool is at places interactive. Please paste stdout into a file separately if necessary. The -k option leaves log files in the destination which can be useful for debugging.
+It is not recommended to pipe stdout to a file since the tool is at places interactive. Please paste stdout into a file separately if necessary. The -k option leaves log files in the destination which can also be useful for debugging.
 
 ##License:
 Original work Copyright 2016 Richard Case
