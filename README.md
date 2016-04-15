@@ -74,7 +74,7 @@ btrfs*     |  Yes  |        Free         | **, Clone only supports metadata, dat
 Filesystem support can be expanded if supported by Linux.
 
 ##Testing:
-A utility called `makedisk.py` is provided that will easily create a disk image for testing. Once created attach it to a loop device using `losetup /dev/loop? ./IMAGEFILE` and supply the loop device as the `DEVICE` argument of ddrescue_used.
+A utility called `makedisk.py` is provided that will create a disk image for testing. Once created, attach the image to a loop device using `losetup --partscan --find --show ./IMAGEFILE` and supply the loop device as the `DEVICE` argument of ddrescue_used.
 
 Usage:
 
